@@ -1,8 +1,8 @@
 # Requirements
 
-- python 13 - <https://www.python.org/downloads/>
-- uv package manager - <https://docs.astral.sh/uv/getting-started/installation/>
-- spotify account and developer app - <https://developer.spotify.com/dashboard>
+- Python 13 - <https://www.python.org/downloads/>
+- UV package manager - <https://docs.astral.sh/uv/getting-started/installation/>
+- Spotify account and developer app - <https://developer.spotify.com/dashboard>
 
 ## How to use
 
