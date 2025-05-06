@@ -1,0 +1,15 @@
+[project]
+name = "spotify-downloader"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "black[d]>=25.1.0",
+    "python-dotenv>=1.1.0",
+    "spotipy>=2.25.1",
+    "yt-dlp>=2025.4.30",
+]
+
+[tool.black]
+line-length = 120
