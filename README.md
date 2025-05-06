@@ -7,7 +7,8 @@
 ## How to use
 
 1. Clone the repository
-2. Create .env file in root of project based on default.env. Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET. MAX_WORKERS by default is 5, but you can change how many threads will be used to download songs.
+2. Create .env file in root of project based on default.env.
+  - Set **SPOTIFY_CLIENT_ID** and **SPOTIFY_CLIENT_SECRET**. Optionally **MAX_WORKERS** by default is 5, but you can change how many threads will be used to download songs.
 3. Run in terminal `uv sync`
 4. Run script `uv run downloader.py`
 5. It will ask you for spotify playlist url
