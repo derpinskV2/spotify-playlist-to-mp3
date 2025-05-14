@@ -15,3 +15,4 @@ Spotify_Downloads/
 .cache
 Spotify_Playlists_Downloads/
 spotify_downloader.log
+failed_downloads.json

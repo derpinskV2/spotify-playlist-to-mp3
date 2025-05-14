@@ -6,8 +6,9 @@ import subprocess
 import concurrent.futures
 import logging
 import json
+import environ
+from pathlib import Path
 
-# --- Logging Setup ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 console_handler = logging.StreamHandler()
@@ -20,18 +21,22 @@ file_handler.setFormatter(log_formatter)
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
+env = environ.Env()
+BASE_DIR = Path(__file__).resolve().parent
 
-# --- Configuration ---
-SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
+environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+SPOTIFY_CLIENT_ID = env("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = env("SPOTIFY_CLIENT_SECRET")
+MAX_WORKERS = env.int("MAX_WORKERS")
+PLAYLIST_URLS = env.list("PLAYLIST_URLS")
+
+
+FAILED_DOWNLOADS_JSON_FILE: str = "failed_downloads.json"
 BASE_DOWNLOAD_FOLDER = "Spotify_Playlists_Downloads"
-MAX_WORKERS: int = int(os.environ.get("MAX_WORKERS", 5))
-FAILED_DOWNLOADS_JSON_FILE = "failed_downloads.json"
 
-# --- Main Script ---
 
 if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-    logger.critical("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET " "environment variables not set. Exiting.")
+    logger.critical("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET environment variables not set. Exiting.")
     exit(1)
 
 os.makedirs(BASE_DOWNLOAD_FOLDER, exist_ok=True)
@@ -94,7 +99,7 @@ def get_playlist_details(playlist_url_or_id):
         return None
 
 
-def download_track_from_youtube(track_info, download_path):
+def download_track_as_mp3(track_info, download_path):
     search_query = f"{track_info['artist']} - {track_info['name']} audio"
     safe_filename_base = "".join(
         c if c.isalnum() or c in " ._-" else "_" for c in f"{track_info['artist']} - {track_info['name']}"
@@ -151,7 +156,6 @@ def download_track_from_youtube(track_info, download_path):
 
 
 def append_failed_tracks_to_json(failed_tracks, filename):
-    """Appends a list of failed track dictionaries to a JSON file."""
     all_failures = []
     if os.path.exists(filename):
         try:
@@ -160,10 +164,10 @@ def append_failed_tracks_to_json(failed_tracks, filename):
                 if content.strip():
                     all_failures = json.loads(content)
                 if not isinstance(all_failures, list):
-                    logger.warning(f"Existing content in {filename} is not a list. " "Overwriting with new failures.")
+                    logger.warning(f"Existing content in {filename} is not a list. Overwriting with new failures.")
                     all_failures = []
         except json.JSONDecodeError:
-            logger.warning(f"Could not decode JSON from {filename}. " "File might be corrupted. Starting fresh list.")
+            logger.warning(f"Could not decode JSON from {filename}. File might be corrupted. Starting fresh list.")
             all_failures = []
         except IOError as e:
             logger.error(f"IOError reading {filename}: {e}. Starting fresh list.")
@@ -180,90 +184,108 @@ def append_failed_tracks_to_json(failed_tracks, filename):
 
 
 def main():
-    playlist_url = input("Enter Spotify Playlist URL or ID: ")
-    if not playlist_url:
-        logger.warning("No playlist URL provided by user. Exiting.")
+    if not PLAYLIST_URLS:
+        logger.warning("No playlist URLs provided in PLAYLIST_URLS list. Exiting.")
         return
 
-    logger.info(f"Fetching playlist details for: {playlist_url}")
-    playlist_data = get_playlist_details(playlist_url)
+    all_failed_tracks_across_playlists = []
 
-    if not playlist_data or not playlist_data.get("tracks"):
-        logger.error(f"No tracks found or error fetching playlist details for {playlist_url}. Exiting.")
-        return
+    for playlist_url in PLAYLIST_URLS:
+        logger.info(f"Processing playlist URL: {playlist_url}")
+        playlist_data = get_playlist_details(playlist_url)
 
-    playlist_name = playlist_data["name"]
-    tracks_to_download = playlist_data["tracks"]
-    total_tracks = len(tracks_to_download)
+        if not playlist_data or not playlist_data.get("tracks"):
+            logger.error(f"No tracks found or error fetching playlist details for {playlist_url}. Skipping.")
+            continue
 
-    sanitized_playlist_name = sanitize_foldername(playlist_name)
-    playlist_specific_download_folder = os.path.join(BASE_DOWNLOAD_FOLDER, sanitized_playlist_name)
-    os.makedirs(playlist_specific_download_folder, exist_ok=True)
+        playlist_name = playlist_data["name"]
+        tracks_to_download = playlist_data["tracks"]
+        total_tracks = len(tracks_to_download)
 
-    logger.info(f"Playlist: '{playlist_name}' (Saving to folder: '{sanitized_playlist_name}')")
-    logger.info(
-        f"Found {total_tracks} tracks. Starting downloads to "
-        f"'{playlist_specific_download_folder}' using up to {MAX_WORKERS} workers."
-    )
+        sanitized_playlist_name = sanitize_foldername(playlist_name)
+        playlist_specific_download_folder = os.path.join(BASE_DOWNLOAD_FOLDER, sanitized_playlist_name)
+        os.makedirs(playlist_specific_download_folder, exist_ok=True)
 
-    downloaded_count = 0
-    failed_count = 0
-    failed_tracks_details = []  # List to store info of failed tracks
+        logger.info(f"Playlist: '{playlist_name}' (Saving to folder: '{sanitized_playlist_name}')")
+        logger.info(
+            f"Found {total_tracks} tracks. Starting downloads to "
+            f"'{playlist_specific_download_folder}' using up to {MAX_WORKERS} workers."
+        )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="Downloader") as executor:
-        future_to_track = {
-            executor.submit(
-                download_track_from_youtube,
-                track,
-                playlist_specific_download_folder,
-            ): track
-            for track in tracks_to_download
-        }
+        downloaded_count = 0
+        failed_count = 0
+        failed_tracks_details_for_playlist = []
 
-        for i, future in enumerate(concurrent.futures.as_completed(future_to_track)):
-            track_info = future_to_track[future]
-            try:
-                success = future.result()
-                if success:
-                    downloaded_count += 1
-                else:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=MAX_WORKERS, thread_name_prefix=f"Downloader-{sanitized_playlist_name}"
+        ) as executor:
+            future_to_track = {
+                executor.submit(
+                    download_track_as_mp3,
+                    track,
+                    playlist_specific_download_folder,
+                ): track
+                for track in tracks_to_download
+            }
+
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_track)):
+                track_info = future_to_track[future]
+                try:
+                    success = future.result()
+                    if success:
+                        downloaded_count += 1
+                    else:
+                        failed_count += 1
+                        failed_tracks_details_for_playlist.append(track_info)
+                        logger.warning(
+                            f"Download FAILED for track: {track_info['artist']} - {track_info['name']} "
+                            f"(Playlist: {playlist_name}). See above error for details."
+                        )
+                except Exception:
                     failed_count += 1
-                    failed_tracks_details.append(track_info)  # Add to list
-                    logger.warning(
-                        f"Download FAILED for track: {track_info['artist']} - {track_info['name']} "
-                        f"(Playlist: {playlist_name}). See above error for details."
+                    failed_tracks_details_for_playlist.append(track_info)
+                    logger.error(
+                        f"Exception during download for track: {track_info['artist']} - {track_info['name']} "
+                        f"(Playlist: {playlist_name})",
+                        exc_info=True,
                     )
-            except Exception:
-                failed_count += 1
-                failed_tracks_details.append(track_info)  # Add to list
-                logger.error(
-                    f"Exception during download for track: {track_info['artist']} - {track_info['name']} "
-                    f"(Playlist: {playlist_name})",
-                    exc_info=True,
+
+                logger.info(
+                    f"\rPlaylist '{playlist_name}' Progress: {i+1}/{total_tracks} tasks processed. "
+                    f"(Succeeded: {downloaded_count}, Failed: {failed_count})",
                 )
 
-            logger.info(
-                f"\rProgress: {i+1}/{total_tracks} tasks processed. "
-                f"(Succeeded: {downloaded_count}, Failed: {failed_count})",
-            )
+        logger.info(f"--- Download Summary for Playlist: {playlist_name} ---")
+        logger.info(f"Successfully downloaded: {downloaded_count} tracks.")
+        logger.info(f"Failed to download: {failed_count} tracks.")
 
-    logger.info("--- Download Summary ---")
-    logger.info(f"Playlist: {playlist_name}")
-    logger.info(f"Successfully downloaded: {downloaded_count} tracks.")
-    logger.info(f"Failed to download: {failed_count} tracks.")
-
-    if failed_tracks_details:
-        logger.warning(f"{failed_count} track(s) failed. Details logged and saved to '{FAILED_DOWNLOADS_JSON_FILE}'.")
-        logger.info("--- Failed Track Details ---")
-        for failed_track in failed_tracks_details:
-            logger.info(
-                f"  - Name: {failed_track['name']}, Artist: {failed_track['artist']}, Album: {failed_track['album']}"
+        if failed_tracks_details_for_playlist:
+            all_failed_tracks_across_playlists.extend(failed_tracks_details_for_playlist)
+            logger.warning(
+                f"{failed_count} track(s) failed in playlist '{playlist_name}'. Details will be included in the overall failed downloads file."
             )
-        append_failed_tracks_to_json(failed_tracks_details, FAILED_DOWNLOADS_JSON_FILE)
+        else:
+            logger.info(f"All tracks processed successfully in playlist '{playlist_name}' or were already downloaded.")
+
+        logger.info(
+            f"MP3s for playlist '{playlist_name}' saved in: {os.path.abspath(playlist_specific_download_folder)}"
+        )
+        logger.info("-" * 20)  # Separator between playlists
+
+    if all_failed_tracks_across_playlists:
+        logger.warning(
+            f"Overall: {len(all_failed_tracks_across_playlists)} track(s) failed across all processed playlists."
+        )
+        logger.info("--- Overall Failed Track Details ---")
+        for failed_track in all_failed_tracks_across_playlists:
+            logger.info(
+                f"  - Name: {failed_track['name']}, Artist: {failed_track['artist']}, Album: {failed_track['album']} (Attempted in: {failed_track.get('playlist_attempted', 'N/A')})"
+            )
+        append_failed_tracks_to_json(all_failed_tracks_across_playlists, FAILED_DOWNLOADS_JSON_FILE)
     else:
-        logger.info("All tracks processed successfully or were already downloaded.")
-
-    logger.info(f"MP3s saved in: {os.path.abspath(playlist_specific_download_folder)}")
+        logger.info(
+            "Overall: All tracks processed successfully across all processed playlists or were already downloaded."
+        )
 
 
 if __name__ == "__main__":
