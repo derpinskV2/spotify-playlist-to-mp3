@@ -9,8 +9,8 @@
 
 2. Create .env file in root of project based on default.env.
     - Set **SPOTIFY_CLIENT_ID** and **SPOTIFY_CLIENT_SECRET**.
+    - Set **SPOTIFY_PLAYLIST** like in default.env
     - Optionally **MAX_WORKERS** by default is 5, but you can change how many threads will be used to download songs.
-    - Set SPOTIFY_PLAYLIST like in default.env
 
 3. Run in terminal `uv sync`
 
@@ -21,6 +21,7 @@
 ### How it works
 
 - When you pass list of your playlists in .env it will download all songs and puts them in separate folders based on playlist name.
+- Only works on your own playlists
 
 #### Why would I use it if already have spotify premium with offline downloads?
 
